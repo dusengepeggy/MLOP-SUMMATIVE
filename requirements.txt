@@ -1,0 +1,31 @@
+# Core ML
+tensorflow==2.16.1
+keras==3.3.3
+numpy>=1.26,<2.0
+pillow>=10.0
+scikit-learn>=1.4,<1.7
+pandas>=2.1,<2.3
+matplotlib>=3.8
+seaborn>=0.13
+
+# Data acquisition
+datasets>=2.19,<4.0
+
+# API
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# UI
+streamlit>=1.35
+requests>=2.31
+
+# Load testing
+locust>=2.24
+
+# Dev / notebook
+pytest>=8.0
+httpx>=0.27
+jupyter>=1.0
+nbconvert>=7.16
+ipykernel>=6.29

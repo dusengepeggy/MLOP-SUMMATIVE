@@ -221,3 +221,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific ---
+# Raw datasets and user uploads
+data/train/
+data/test/
+data/uploads/
+# Model backups created on retrain
+models/*_2*.keras
+models/*_2*.h5
+# Locust raw CSV output
+docs/locust/*.csv
+# Claude / editor
+.claude/settings.local.json
+.idea/
