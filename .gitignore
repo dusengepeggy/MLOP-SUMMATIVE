@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
@@ -224,9 +224,10 @@ __marimo__/
 
 # --- Project-specific ---
 # Raw datasets and user uploads
-data/train/
-data/test/
-data/uploads/
+data/train/*
+data/test/*
+data/uploads/*
+!data/*/.gitkeep
 # Model backups created on retrain
 models/*_2*.keras
 models/*_2*.h5
@@ -235,3 +236,5 @@ docs/locust/*.csv
 # Claude / editor
 .claude/settings.local.json
 .idea/
+models/*.tmp.*
+bean-disease-ml-pipeline.zip

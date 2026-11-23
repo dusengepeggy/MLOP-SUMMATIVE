@@ -43,8 +43,9 @@ def download(force=False):
     from datasets import load_dataset
 
     for d in (TRAIN_DIR, TEST_DIR):
-        if d.exists():
-            shutil.rmtree(d)
+        for c in CLASSES:  # remove class folders only, keep .gitkeep
+            if (d / c).exists():
+                shutil.rmtree(d / c)
     ds = load_dataset(HF_DATASET)
     names = ds["train"].features["labels"].names
     assert sorted(names) == sorted(CLASSES), f"Unexpected classes: {names}"
