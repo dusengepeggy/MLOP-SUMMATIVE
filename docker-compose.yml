@@ -1,10 +1,10 @@
 # Prediction replicas scale with:  docker compose up -d --build --scale api=3
 #
 # Retraining design: a single dedicated `trainer` service (ENABLE_TRAINING=true) owns
-# /upload and /retrain; nginx routes those paths to it. The scalable `api` replicas
-# have ENABLE_TRAINING=false and only serve predictions. All services share the
-# `models` and `data` named volumes; when the trainer writes a new bean_model.keras,
-# every replica reloads it on its next request (mtime check in src/prediction.py).
+# /upload and /retrain (uploads go into its SQLite DB); nginx routes those paths to it.
+# The scalable `api` replicas have ENABLE_TRAINING=false and only serve predictions.
+# All services share the `models` and `data` named volumes; when the trainer writes a new
+# head.npz, every replica reloads it on its next request (mtime check in src/serving.py).
 
 x-api-common: &api-common
   build:
@@ -23,14 +23,13 @@ services:
       ENABLE_TRAINING: "true"
       AUTO_RETRAIN: "true"
       RETRAIN_THRESHOLD: "${RETRAIN_THRESHOLD:-30}"
-      RETRAIN_EPOCHS: "${RETRAIN_EPOCHS:-3}"
-      DOWNLOAD_DATA: "true"
+      RETRAIN_EPOCHS: "${RETRAIN_EPOCHS:-30}"
 
   api:
     <<: *api-common
     environment:
       ENABLE_TRAINING: "false"
-      INFERENCE_THREADS: "${API_CPUS:-1}"  # match TF thread pools to the CPU limit
+      INFERENCE_THREADS: "${API_CPUS:-1}"  # match LiteRT threads to the CPU limit
     depends_on:
       trainer:
         condition: service_healthy
@@ -38,7 +37,7 @@ services:
       resources:
         limits:
           cpus: "${API_CPUS:-1.0}"
-          memory: 1500M
+          memory: 512M  # same memory budget as a Render free instance
 
   nginx:
     image: nginx:1.28-alpine

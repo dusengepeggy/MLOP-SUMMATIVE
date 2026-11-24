@@ -237,6 +237,14 @@ def retrain_history(limit: int = Query(20, ge=1, le=200)):
     return {"retrains": db.list_retrains(limit)}
 
 
+def _base_distribution():
+    """Original training-set class counts (from the cached features, so the image folders are optional)."""
+    if TRAIN_DIR.exists() and any(TRAIN_DIR.glob("*/*.jpg")):
+        return pp.class_distribution(TRAIN_DIR)
+    _, y, _ = serving.load_features(serving.FEATURES_TRAIN_PATH)
+    return {c: int((y == i).sum()) for i, c in enumerate(CLASSES)}
+
+
 @app.get("/metrics")
 def metrics():
     meta = serving.load_meta()
@@ -244,7 +252,7 @@ def metrics():
     for row in db.upload_summary():
         if row["status"] == "used":
             used[row["label"]] += row["n"]
-    base = pp.class_distribution(TRAIN_DIR)
+    base = _base_distribution()
     return {
         **_model_info(),
         "metrics": meta.get("metrics"),
