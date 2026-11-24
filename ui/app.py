@@ -26,6 +26,9 @@ def _setting(name, default):
 
 
 API_URL = str(_setting("API_URL", "http://localhost:8000")).rstrip("/")
+if not API_URL.startswith(("http://", "https://")):  # e.g. Render's fromService gives a bare host
+    API_URL = f"https://{API_URL}"
+SAMPLES_DIR = Path(__file__).resolve().parents[1] / "docs" / "samples"
 EDA_STATS_PATH = Path(os.getenv("EDA_STATS_PATH", Path(__file__).resolve().parents[1] / "docs" / "eda_stats.json"))
 CLASSES = ["angular_leaf_spot", "bean_rust", "healthy"]
 PRETTY = {"angular_leaf_spot": "Angular leaf spot", "bean_rust": "Bean rust", "healthy": "Healthy"}
@@ -59,11 +62,20 @@ def api_post(path, **kwargs):
         return None
 
 
-def metric_row(metrics, label=""):
-    cols = st.columns(5)
-    for col, key in zip(cols, ["accuracy", "precision", "recall", "f1", "roc_auc"]):
-        col.metric(f"{label}{key.replace('_', '-').upper() if key == 'roc_auc' else key.title()}",
-                   f"{metrics[key]:.3f}" if metrics and key in metrics else "–")
+METRIC_NAMES = {"accuracy": "Accuracy", "precision": "Precision", "recall": "Recall", "f1": "F1",
+                "roc_auc": "ROC-AUC", "loss": "Loss"}
+
+
+def metric_row(metrics, reference=None):
+    """Show the test-set metrics; with `reference`, also show the change versus it."""
+    cols = st.columns(len(METRIC_NAMES))
+    for col, (key, name) in zip(cols, METRIC_NAMES.items()):
+        value = metrics.get(key) if metrics else None
+        delta = None
+        if value is not None and reference and reference.get(key) is not None:
+            delta = f"{value - reference[key]:+.3f}"
+        col.metric(name, f"{value:.3f}" if value is not None else "–", delta,
+                   delta_color="inverse" if key == "loss" else "normal")
 
 
 @st.cache_data
@@ -77,14 +89,23 @@ def load_eda():
 def page_predict():
     st.header("Predict a leaf")
     st.write("Upload a photo of a single bean leaf. The model classifies it as angular leaf spot, bean rust or healthy.")
-    file = st.file_uploader("Leaf image", type=["jpg", "jpeg", "png"])
-    if not file:
-        return
+    source = st.radio("Image source", ["Upload a photo", "Use a held-out test image"], horizontal=True)
+    if source == "Upload a photo":
+        file = st.file_uploader("Leaf image", type=["jpg", "jpeg", "png"])
+        if not file:
+            return
+        name, data, mime, true_label = file.name, file.getvalue(), file.type, None
+    else:
+        samples = sorted(SAMPLES_DIR.glob("*.jpg"))
+        label_of = lambda p: next((c for c in CLASSES if p.stem.startswith(c)), None)  # noqa: E731
+        pick = st.selectbox("Test image (true class in brackets)", samples,
+                            format_func=lambda p: f"{p.name}  [{PRETTY.get(label_of(p), '?')}]")
+        name, data, mime, true_label = pick.name, pick.read_bytes(), "image/jpeg", label_of(pick)
     left, right = st.columns([1, 1])
-    left.image(file, caption=file.name, width="stretch")
+    left.image(data, caption=name, width="stretch")
     with right:
         with st.spinner("Classifying..."):
-            r = api_post("/predict", files={"file": (file.name, file.getvalue(), file.type)})
+            r = api_post("/predict", files={"file": (name, data, mime)})
         if r is None:
             return
         if r.status_code != 200:
@@ -92,6 +113,11 @@ def page_predict():
             return
         res = r.json()
         st.subheader(PRETTY.get(res["label"], res["label"]))
+        if true_label:
+            if res["label"] == true_label:
+                st.success(f"Correct: the true class is {PRETTY[true_label]}.")
+            else:
+                st.error(f"Incorrect: the true class is {PRETTY[true_label]}.")
         st.progress(res["confidence"], text=f"Confidence {res['confidence']:.1%}")
         df = pd.DataFrame({"class": [PRETTY[c] for c in res["probabilities"]], "probability": list(res["probabilities"].values())})
         chart = alt.Chart(df).mark_bar().encode(
@@ -106,7 +132,8 @@ def page_predict():
 
 
 def page_visualizations():
-    st.header("Dataset visualizations")
+    st.header("Data insights")
+    st.caption("Three features of the dataset, what they show, and how they shaped the pipeline (summary at the bottom).")
 
     st.subheader("1. Class distribution (live from the API)")
     m = api_get("/metrics")
@@ -167,9 +194,25 @@ def page_visualizations():
         "Random contrast augmentation during training further guards against lighting bias."
     )
 
+    st.subheader("How these features drove downstream decisions")
+    st.markdown(
+        "| Finding | Decision in the pipeline |\n|---|---|\n"
+        "| Classes are balanced (ratio ≈ 1.02) | Plain accuracy is meaningful, but macro precision/recall/F1 are reported too; "
+        "inverse-frequency **class weights** are applied at every (re)training because user uploads can unbalance the data |\n"
+        "| Colour separates healthy from diseased *on average* but overlaps heavily | A **CNN on raw pixels** (MobileNetV2 transfer "
+        "learning) instead of hand-crafted colour features; texture and lesion shape are needed |\n"
+        "| Disease cues are small lesions | Input kept at **224×224** (MobileNetV2's native size) rather than smaller, and the top "
+        "backbone layers are **fine-tuned** to adapt ImageNet features to lesion textures |\n"
+        "| No lighting shortcut, but leaves appear at every angle and zoom | **Augmentation**: flips, rotation, zoom and contrast jitter |\n"
+        "| Leaves are photographed in the field with varied backgrounds | Uploads are validated, converted to RGB and resized "
+        "before they enter retraining |"
+    )
 
-def page_upload_retrain():
-    st.header("Upload data and retrain")
+
+def page_upload():
+    st.header("Upload training data")
+    st.write("Add labelled leaf images for the next retraining. Each file is validated, **saved to the database** "
+             "(SQLite) and **preprocessed** right away (RGB → 224×224 → feature vector from the trained backbone).")
     status = api_get("/status") or {}
     c1, c2, c3 = st.columns(3)
     c1.metric("Pending uploads", status.get("pending_uploads", "–"))
@@ -197,8 +240,31 @@ def page_upload_retrain():
             elif r is not None:
                 st.error(r.json().get("detail", r.text))
 
-    st.subheader("Retrain")
-    epochs = st.slider("Epochs", 1, 10, 2)
+    st.subheader("Uploads in the database")
+    up = api_get("/uploads")
+    if up and up["uploads"]:
+        df = pd.DataFrame(up["uploads"])
+        df["label"] = df["label"].map(PRETTY)
+        st.dataframe(df[["id", "filename", "label", "status", "width", "height", "uploaded_at", "retrain_id"]],
+                     hide_index=True, width="stretch")
+        st.caption("Status: preprocessed = waiting for the next retrain; used = consumed by retrain #retrain_id.")
+    elif up is not None:
+        st.info("No uploads yet.")
+
+
+def page_retrain():
+    st.header("Retrain the model")
+    st.write(
+        "Retraining fine-tunes **our trained model** (its classifier head, starting from the current weights) on the "
+        "original training data plus every uploaded image, with Adam, L2 regularisation, class weights and early "
+        "stopping. The **held-out test set** (128 images, never trained on) is scored before and after, so the "
+        "effect of the new data is measured on the same images."
+    )
+    status = api_get("/status") or {}
+    c1, c2 = st.columns(2)
+    c1.metric("New uploads waiting", status.get("pending_uploads", "–"))
+    c2.metric("Current model version", status.get("model_version", "–"))
+    epochs = st.slider("Maximum epochs (early stopping may finish sooner)", 5, 200, 30, step=5)
     if st.button("Retrain model", type="primary"):
         r = api_post("/retrain", params={"epochs": epochs})
         if r is not None and r.status_code == 200:
@@ -215,15 +281,31 @@ def page_upload_retrain():
     elif job.get("status") in ("done", "failed"):
         show_job_result(job)
 
+    st.subheader("Retraining history")
+    hist = api_get("/retrain/history")
+    if hist and hist["retrains"]:
+        rows = [{
+            "run": r["id"], "trigger": r["trigger"], "status": r["status"], "new images": r["n_new"],
+            "version": f"v{r['version_before']} → v{r['version_after']}" if r["version_after"] else f"v{r['version_before']}",
+            "accuracy before": (r["metrics_before"] or {}).get("accuracy"),
+            "accuracy after": (r["metrics_after"] or {}).get("accuracy"),
+            "loss before": (r["metrics_before"] or {}).get("loss"),
+            "loss after": (r["metrics_after"] or {}).get("loss"),
+            "finished": (r["finished_at"] or "")[:19],
+        } for r in hist["retrains"]]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    elif hist is not None:
+        st.info("No retraining runs yet.")
+
 
 def show_job_progress(job):
     bar = st.progress(0.0, text="Starting retrain...")
     while job.get("status") == "running":
         p = job.get("progress", {})
         total = max(p.get("total", 1), 1)
-        acc = f" · val acc {p['val_accuracy']:.3f}" if "val_accuracy" in p else ""
-        bar.progress(min(p.get("epoch", 0) / total, 1.0), text=f"Epoch {p.get('epoch', 0)}/{total}{acc}")
-        time.sleep(2)
+        loss = f" · validation loss {p['val_loss']:.4f}" if "val_loss" in p else ""
+        bar.progress(min(p.get("epoch", 0) / total, 1.0), text=f"Epoch {p.get('epoch', 0)}/{total}{loss}")
+        time.sleep(1)
         job = api_get("/retrain/status") or {}
     bar.progress(1.0, text="Finished")
     st.session_state.pop("watch_job", None)
@@ -234,11 +316,13 @@ def show_job_result(job):
     if job.get("status") == "failed":
         st.error(f"Last retrain failed: {job.get('error')}")
         return
-    st.success(f"Last retrain ({job.get('trigger')}) finished at {job.get('finished_at', '')[:19]}: model v{job.get('version')}.")
-    st.markdown("**Before**")
+    st.success(f"Last retrain ({job.get('trigger')}) finished at {job.get('finished_at', '')[:19]}: "
+               f"model v{job.get('version')}, {job.get('n_new_uploads', 0)} new image(s), "
+               f"{job.get('epochs_run', '?')} epoch(s) run (early stopping on validation loss).")
+    st.markdown("**Held-out test set: before retraining**")
     metric_row(job.get("metrics_before"))
-    st.markdown("**After**")
-    metric_row(job.get("metrics"))
+    st.markdown("**Held-out test set: after retraining** (change vs. before)")
+    metric_row(job.get("metrics"), reference=job.get("metrics_before"))
 
 
 def page_system():
@@ -276,8 +360,9 @@ def page_system():
 
 PAGES = {
     "Predict": page_predict,
-    "Visualizations": page_visualizations,
-    "Upload & Retrain": page_upload_retrain,
+    "Data insights": page_visualizations,
+    "Upload data": page_upload,
+    "Retrain": page_retrain,
     "System": page_system,
 }
 

@@ -10,6 +10,7 @@ RUN pip install -r ui/requirements.txt
 
 COPY ui/ ui/
 COPY docs/eda_stats.json docs/eda_stats.json
+COPY docs/samples/ docs/samples/
 
 EXPOSE 8501
 HEALTHCHECK --interval=20s --timeout=5s --start-period=30s --retries=3 \
