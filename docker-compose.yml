@@ -1,4 +1,4 @@
-﻿# Prediction replicas scale with:  docker compose up -d --build --scale api=3
+# Prediction replicas scale with:  docker compose up -d --build --scale api=3
 #
 # Retraining design: a single dedicated `trainer` service (ENABLE_TRAINING=true) owns
 # /upload and /retrain; nginx routes those paths to it. The scalable `api` replicas

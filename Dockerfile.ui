@@ -1,11 +1,12 @@
-﻿FROM python:3.11-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
-RUN pip install "streamlit>=1.50" "requests>=2.31" "pandas>=2.1,<2.3" "altair>=5"
+COPY ui/requirements.txt ui/requirements.txt
+RUN pip install -r ui/requirements.txt
 
 COPY ui/ ui/
 COPY docs/eda_stats.json docs/eda_stats.json
