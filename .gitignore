@@ -223,14 +223,17 @@ __marimo__/
 .streamlit/secrets.toml
 
 # --- Project-specific ---
-# Raw datasets and user uploads
-data/train/*
-data/test/*
+# data/train and data/test (256 px copies) are tracked; uploads, the SQLite DB and
+# the full-resolution originals are not
 data/uploads/*
-!data/*/.gitkeep
+!data/uploads/.gitkeep
+data/_fullres/
+data/*.db
+data/*.db-journal
 # Model backups created on retrain
 models/*_2*.keras
 models/*_2*.h5
+models/head_v*.npz
 # Locust raw CSV output
 docs/locust/*.csv
 # Claude / editor
