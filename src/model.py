@@ -23,6 +23,7 @@ from src.config import (
     UPLOAD_DIR,
 )
 from src import preprocessing as pp
+from src.metrics import compute_metrics  # noqa: F401  (re-exported for notebook/back-compat)
 
 FINE_TUNE_AT = 100  # MobileNetV2 has 154 layers; unfreeze the top ~54
 
@@ -94,33 +95,6 @@ def predict_directory(model, test_dir=TEST_DIR):
     y_true = np.concatenate([y.numpy() for _, y in ds])
     y_prob = model.predict(ds, verbose=0)
     return y_true, y_prob, paths
-
-
-def compute_metrics(y_true, y_prob):
-    from sklearn.metrics import (
-        accuracy_score,
-        classification_report,
-        confusion_matrix,
-        f1_score,
-        precision_score,
-        recall_score,
-        roc_auc_score,
-    )
-
-    y_pred = y_prob.argmax(axis=1)
-    labels = list(range(len(CLASSES)))
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro", labels=labels)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
-        "classification_report": classification_report(
-            y_true, y_pred, labels=labels, target_names=CLASSES, output_dict=True, zero_division=0
-        ),
-        "n_test": int(len(y_true)),
-    }
 
 
 def evaluate(model, test_dir=TEST_DIR):
