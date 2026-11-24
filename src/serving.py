@@ -90,7 +90,7 @@ class Head:
     def predict_proba(self, X):
         return softmax(np.asarray(X, dtype=np.float32) @ self.W + self.b)
 
-    def fit(self, X, y, X_val=None, y_val=None, epochs=300, lr=1e-3, l2=1e-4, class_weight=None,
+    def fit(self, X, y, X_val=None, y_val=None, epochs=300, lr=3e-4, l2=1e-3, class_weight=None,
             patience=20, batch_size=64, seed=42, progress_cb=None):
         """Warm-start fine-tuning of the softmax layer (Adam, L2, class weights, early stopping)."""
         rng = np.random.default_rng(seed)
