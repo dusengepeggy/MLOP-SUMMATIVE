@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src import model as model_lib
 from src import prediction
 from src import preprocessing as pp
+from src import registry
 from src.config import CLASSES, IMAGE_EXTENSIONS, TRAIN_DIR
 
 
@@ -43,6 +44,12 @@ HOSTNAME = socket.gethostname()
 
 @asynccontextmanager
 async def lifespan(_app):
+    try:  # on ephemeral hosts, restore the latest retrained model from the Hub registry
+        pulled = registry.pull_if_newer()
+        if pulled:
+            print(f"[startup] pulled model v{pulled} from {os.getenv('HF_MODEL_REPO')}")
+    except Exception as exc:
+        print(f"[startup] registry pull skipped: {type(exc).__name__}: {exc}")
     try:  # warm up so the first /predict is not slow; a missing model is reported by /predict
         prediction.get_model()
     except RuntimeError as exc:
@@ -102,6 +109,13 @@ def start_retrain(trigger, epochs=None):
     def worker():
         try:
             meta = run_retrain(epochs, progress)
+            if registry.enabled():  # persist the new version before reporting "done"
+                _job["registry_push"] = "pushing"
+                try:
+                    registry.push(meta)
+                    _job["registry_push"] = "ok"
+                except Exception as exc:  # the model is still saved locally
+                    _job["registry_push"] = f"failed: {type(exc).__name__}: {exc}"
             _job.update(status="done", version=meta.get("version"), metrics=meta.get("metrics"))
         except Exception as exc:  # report the failure through /retrain/status
             _job.update(status="failed", error=f"{type(exc).__name__}: {exc}")
@@ -148,6 +162,7 @@ def status():
         "pending_uploads": pp.pending_upload_count(),
         "retrain_threshold": RETRAIN_THRESHOLD,
         "training_enabled": ENABLE_TRAINING,
+        "model_registry": os.getenv("HF_MODEL_REPO") if registry.enabled() else None,
         "retrain_status": _job["status"],
         "prediction_count": _prediction_count,
         "request_count": _request_count,
