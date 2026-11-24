@@ -1,4 +1,4 @@
-# Core ML
+﻿# Core ML
 tensorflow==2.16.1
 keras==3.3.3
 numpy>=1.26,<2.0
@@ -10,6 +10,7 @@ seaborn>=0.13
 
 # Data acquisition
 datasets>=2.19,<4.0
+pyarrow>=15,<18
 
 # API
 fastapi>=0.110

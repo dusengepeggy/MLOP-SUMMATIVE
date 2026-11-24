@@ -1,0 +1,12 @@
+﻿# Slim runtime deps for the API / trainer container (CPU-only TensorFlow).
+tensorflow-cpu==2.16.1
+keras==3.3.3
+numpy>=1.26,<2.0
+pillow>=10.0
+scikit-learn>=1.4,<1.7
+pandas>=2.1,<2.3
+datasets>=2.19,<4.0
+pyarrow>=15,<18  # newer pyarrow wheels require NumPy 2, which TF 2.16 does not support
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
