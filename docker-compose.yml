@@ -30,6 +30,7 @@ services:
     <<: *api-common
     environment:
       ENABLE_TRAINING: "false"
+      INFERENCE_THREADS: "${API_CPUS:-1}"  # match TF thread pools to the CPU limit
     depends_on:
       trainer:
         condition: service_healthy
