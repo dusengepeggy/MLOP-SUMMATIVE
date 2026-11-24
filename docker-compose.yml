@@ -1,0 +1,70 @@
+﻿# Prediction replicas scale with:  docker compose up -d --build --scale api=3
+#
+# Retraining design: a single dedicated `trainer` service (ENABLE_TRAINING=true) owns
+# /upload and /retrain; nginx routes those paths to it. The scalable `api` replicas
+# have ENABLE_TRAINING=false and only serve predictions. All services share the
+# `models` and `data` named volumes; when the trainer writes a new bean_model.keras,
+# every replica reloads it on its next request (mtime check in src/prediction.py).
+
+x-api-common: &api-common
+  build:
+    context: .
+    dockerfile: Dockerfile.api
+  image: bean-api:latest
+  restart: unless-stopped
+  volumes:
+    - models:/app/models
+    - data:/app/data
+
+services:
+  trainer:
+    <<: *api-common
+    environment:
+      ENABLE_TRAINING: "true"
+      AUTO_RETRAIN: "true"
+      RETRAIN_THRESHOLD: "${RETRAIN_THRESHOLD:-30}"
+      RETRAIN_EPOCHS: "${RETRAIN_EPOCHS:-3}"
+      DOWNLOAD_DATA: "true"
+
+  api:
+    <<: *api-common
+    environment:
+      ENABLE_TRAINING: "false"
+    depends_on:
+      trainer:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "${API_CPUS:-1.0}"
+          memory: 1500M
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      trainer:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    image: bean-ui:latest
+    restart: unless-stopped
+    environment:
+      API_URL: "http://nginx"
+    ports:
+      - "8501:8501"
+    depends_on:
+      - nginx
+
+volumes:
+  models:
+  data:
