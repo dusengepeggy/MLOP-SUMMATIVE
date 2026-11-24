@@ -1,4 +1,4 @@
-﻿"""Streamlit UI for the bean leaf disease pipeline.
+"""Streamlit UI for the bean leaf disease pipeline.
 
 Run:  streamlit run ui/app.py      (API_URL defaults to http://localhost:8000)
 """
@@ -12,23 +12,42 @@ import pandas as pd
 import requests
 import streamlit as st
 
-API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
+st.set_page_config(page_title="Bean Leaf Doctor", page_icon="🌱", layout="wide")
+
+
+def _setting(name, default):
+    """Environment variable first (Docker), then Streamlit secrets (Community Cloud)."""
+    if os.getenv(name):
+        return os.getenv(name)
+    try:
+        return st.secrets.get(name, default)
+    except Exception:  # no secrets.toml locally
+        return default
+
+
+API_URL = str(_setting("API_URL", "http://localhost:8000")).rstrip("/")
 EDA_STATS_PATH = Path(os.getenv("EDA_STATS_PATH", Path(__file__).resolve().parents[1] / "docs" / "eda_stats.json"))
 CLASSES = ["angular_leaf_spot", "bean_rust", "healthy"]
 PRETTY = {"angular_leaf_spot": "Angular leaf spot", "bean_rust": "Bean rust", "healthy": "Healthy"}
-TIMEOUT = 60
-
-st.set_page_config(page_title="Bean Leaf Doctor", page_icon="ðŸŒ±", layout="wide")
+TIMEOUT = 90  # free hosts can take a while to wake up
 
 
 # ---------------------------------------------------------------- API helpers
+def _report(method, path, exc):
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        st.warning("The API is not responding. On the free hosting tier it sleeps when idle and takes "
+                   "about 30-60 s to wake up. Please retry shortly.")
+    else:
+        st.error(f"API error on {method} {path}: {exc}")
+
+
 def api_get(path):
     try:
         r = requests.get(f"{API_URL}{path}", timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
     except requests.RequestException as exc:
-        st.error(f"API error on GET {path}: {exc}")
+        _report("GET", path, exc)
         return None
 
 
@@ -36,7 +55,7 @@ def api_post(path, **kwargs):
     try:
         return requests.post(f"{API_URL}{path}", timeout=TIMEOUT, **kwargs)
     except requests.RequestException as exc:
-        st.error(f"API error on POST {path}: {exc}")
+        _report("POST", path, exc)
         return None
 
 
@@ -44,7 +63,7 @@ def metric_row(metrics, label=""):
     cols = st.columns(5)
     for col, key in zip(cols, ["accuracy", "precision", "recall", "f1", "roc_auc"]):
         col.metric(f"{label}{key.replace('_', '-').upper() if key == 'roc_auc' else key.title()}",
-                   f"{metrics[key]:.3f}" if metrics and key in metrics else "â€“")
+                   f"{metrics[key]:.3f}" if metrics and key in metrics else "–")
 
 
 @st.cache_data
@@ -124,7 +143,7 @@ def page_visualizations():
     st.markdown(
         f"**Interpretation.** Healthy leaves are the greenest (mean green {g.loc['healthy', 'mean_g']:.0f} vs "
         f"{g.loc['bean_rust', 'mean_g']:.0f} for rust) and have the highest average hue "
-        f"({g.loc['healthy', 'hue']:.0f}Â° vs about {g.loc['bean_rust', 'hue']:.0f}Â° for rust), because disease replaces green tissue "
+        f"({g.loc['healthy', 'hue']:.0f}° vs about {g.loc['bean_rust', 'hue']:.0f}° for rust), because disease replaces green tissue "
         "with brown/yellow lesions. Bean rust pulls the green channel down the most; angular leaf spot keeps more green but adds red. "
         "Colour is therefore a genuine signal, but the boxes overlap heavily, so colour alone cannot separate the classes; "
         "the CNN has to learn lesion shape and texture too."
@@ -153,9 +172,9 @@ def page_upload_retrain():
     st.header("Upload data and retrain")
     status = api_get("/status") or {}
     c1, c2, c3 = st.columns(3)
-    c1.metric("Pending uploads", status.get("pending_uploads", "â€“"))
-    c2.metric("Auto-retrain threshold", status.get("retrain_threshold", "â€“"))
-    c3.metric("Model version", status.get("model_version", "â€“"))
+    c1.metric("Pending uploads", status.get("pending_uploads", "–"))
+    c2.metric("Auto-retrain threshold", status.get("retrain_threshold", "–"))
+    c3.metric("Model version", status.get("model_version", "–"))
 
     st.subheader("Bulk upload")
     with st.form("upload", clear_on_submit=True):
@@ -202,7 +221,7 @@ def show_job_progress(job):
     while job.get("status") == "running":
         p = job.get("progress", {})
         total = max(p.get("total", 1), 1)
-        acc = f" Â· val acc {p['val_accuracy']:.3f}" if "val_accuracy" in p else ""
+        acc = f" · val acc {p['val_accuracy']:.3f}" if "val_accuracy" in p else ""
         bar.progress(min(p.get("epoch", 0) / total, 1.0), text=f"Epoch {p.get('epoch', 0)}/{total}{acc}")
         time.sleep(2)
         job = api_get("/retrain/status") or {}
@@ -228,17 +247,17 @@ def page_system():
     status = api_get("/status")
     latency = (time.time() - t0) * 1000
     if not status:
-        st.error("ðŸ”´ API unreachable")
+        st.error("🔴 API unreachable")
         return
-    st.success(f"ðŸŸ¢ API healthy Â· {latency:.0f} ms Â· served by {status['hostname']}")
+    st.success(f"🟢 API healthy · {latency:.0f} ms · served by {status['hostname']}")
     c1, c2, c3, c4 = st.columns(4)
     up = int(status["uptime_seconds"])
     c1.metric("Uptime", f"{up // 3600}h {up % 3600 // 60}m {up % 60}s")
     c2.metric("Model version", status.get("model_version"))
     c3.metric("Predictions served", status.get("prediction_count"))
     c4.metric("Requests (this replica)", status.get("request_count"))
-    st.write(f"**Last trained:** {status.get('trained_at', 'â€“')}")
-    st.write(f"**Retrain status:** {status.get('retrain_status')} Â· **training enabled on this replica:** {status.get('training_enabled')}")
+    st.write(f"**Last trained:** {status.get('trained_at', '–')}")
+    st.write(f"**Retrain status:** {status.get('retrain_status')} · **training enabled on this replica:** {status.get('training_enabled')}")
 
     m = api_get("/metrics")
     if m and m.get("metrics"):
@@ -262,7 +281,7 @@ PAGES = {
     "System": page_system,
 }
 
-st.sidebar.title("ðŸŒ± Bean Leaf Doctor")
+st.sidebar.title("🌱 Bean Leaf Doctor")
 choice = st.sidebar.radio("Page", list(PAGES))
 st.sidebar.caption(f"API: {API_URL}")
 PAGES[choice]()

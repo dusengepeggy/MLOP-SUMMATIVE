@@ -1,0 +1,5 @@
+# UI-only dependencies (Streamlit Community Cloud uses this file, not the root one with TensorFlow)
+streamlit>=1.50
+requests>=2.31
+pandas>=2.1,<2.3
+altair>=5
