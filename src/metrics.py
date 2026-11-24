@@ -18,7 +18,8 @@ def compute_metrics(y_true, y_prob):
     )
 
     y_true = np.asarray(y_true)
-    y_prob = np.asarray(y_prob, dtype=np.float64)
+    y_prob = np.clip(np.asarray(y_prob, dtype=np.float64), 1e-7, 1.0)
+    y_prob = y_prob / y_prob.sum(axis=1, keepdims=True)  # exact normalisation for log_loss
     y_pred = y_prob.argmax(axis=1)
     labels = list(range(len(CLASSES)))
     return {
@@ -27,7 +28,7 @@ def compute_metrics(y_true, y_prob):
         "recall": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro", labels=labels)),
-        "loss": float(log_loss(y_true, np.clip(y_prob, 1e-7, 1.0), labels=labels)),
+        "loss": float(log_loss(y_true, y_prob, labels=labels)),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
         "classification_report": classification_report(
             y_true, y_pred, labels=labels, target_names=CLASSES, output_dict=True, zero_division=0
