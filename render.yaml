@@ -1,0 +1,40 @@
+# Render Blueprint: dashboard.render.com -> New -> Blueprint -> select this repository -> Apply.
+# Two free web services:
+#   bean-leaf-api-pd  FastAPI (Dockerfile.api, TF-free serving, ~70 MB RAM; fits the 512 MB free tier)
+#   bean-leaf-ui-pd   Streamlit UI calling the API over its public URL
+# Free instances sleep after 15 min without traffic and start with a fresh disk, which resets
+# uploads/retrains. Keep them awake with an uptime pinger (e.g. UptimeRobot, every 5 min, on
+# https://<api>/status and the UI URL).
+services:
+  - type: web
+    name: bean-leaf-api-pd
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    healthCheckPath: /status
+    autoDeploy: true
+    envVars:
+      - key: ENABLE_TRAINING
+        value: "true"
+      - key: RETRAIN_THRESHOLD
+        value: "30"
+      - key: RETRAIN_EPOCHS
+        value: "30"
+      - key: INFERENCE_THREADS
+        value: "1"
+
+  - type: web
+    name: bean-leaf-ui-pd
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r ui/requirements.txt
+    startCommand: streamlit run ui/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: API_URL
+        value: https://bean-leaf-api-pd.onrender.com
