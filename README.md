@@ -1,96 +1,131 @@
 # Bean Leaf Disease ML Pipeline
 
-An end-to-end machine learning pipeline that diagnoses **bean leaf diseases from smartphone photos**. It covers data
-acquisition, model training and evaluation, a REST API, a web UI, bulk data upload with one-click retraining, Docker
-deployment behind a load balancer, and load testing with Locust.
+An end-to-end machine learning pipeline that diagnoses **bean leaf diseases from smartphone photos**. It covers:
+- data acquisition, preprocessing, MobileNetV2 transfer learning and evaluation
+- a FastAPI service and a Streamlit UI for prediction, data upload (saved to a database) and retraining
+- Docker deployment behind an nginx load balancer
+- a live cloud deployment
+- load testing with Locust
 
 | | |
 |---|---|
+| **Live app (UI)** | https://bean-leaf-ui-pd.onrender.com |
+| **Live API (Swagger docs)** | https://bean-leaf-api-pd.onrender.com/docs |
 | **Demo video** | _YouTube link: add after recording_ |
-| **Live UI** | _http://&lt;VM-IP&gt;:8501: add after deployment_ |
-| **Live API docs** | _http://&lt;VM-IP&gt;/docs: add after deployment_ |
+
+> Free hosting note: Render's free instances sleep after 15 minutes without traffic. The first request after that
+> takes about 20 s (cold start), and a restart resets uploads and retrained models to the deployed baseline. The
+> services are kept awake with an uptime pinger (UptimeRobot, every 5 minutes).
 
 ## Problem and data
 
-Angular leaf spot and bean rust are two of the most damaging diseases of common beans, a staple crop across East
-Africa. Early diagnosis from a phone photo lets farmers act before the disease spreads.
+Angular leaf spot and bean rust are two of the most damaging diseases of common beans, a staple crop across East Africa.
+Diagnosing them early from a phone photo lets farmers act before the disease spreads.
 
-* **Dataset:** [Beans](https://huggingface.co/datasets/AI-Lab-Makerere/beans) by the Makerere AI Lab (Uganda): field photos
-  in three classes: `angular_leaf_spot`, `bean_rust`, `healthy`.
-* 1,167 training images (HF train + validation, balanced at about 390 per class) and 128 held-out test images.
+- **Source:** [Beans](https://huggingface.co/datasets/AI-Lab-Makerere/beans) (Makerere AI Lab, Uganda), downloaded by
+  `src/data_acquisition.py`. These are field photos in 3 classes: `angular_leaf_spot`, `bean_rust` and `healthy`.
+- **Explicit splits in the repo:**
+  - `data/train/<class>/`: 1,167 images (HF train + validation, about 390 per class). A 15 % validation split is carved
+    out at training time.
+  - `data/test/<class>/`: 128 held-out test images, used only for evaluation.
+  - The committed images are resized to 256 px (the model uses 224 px). `python -m src.data_acquisition --force`
+    restores the full-size originals.
 
-## Model and results
+## Model and evaluation
 
-MobileNetV2 (ImageNet) transfer learning, trained in two stages: a frozen-backbone head, then fine-tuning of the top
-54 backbone layers. Training uses augmentation (flip, rotation, zoom, contrast), dropout, early stopping and class weights.
-Saved as `models/bean_model.h5` (and `bean_model.keras`), about 9 MB.
+- **Architecture:** MobileNetV2 (ImageNet weights) → global average pooling → dropout 0.3 → dense softmax(3).
+- **Optimisation:**
+  - transfer learning with two-stage training: a frozen-backbone head, then fine-tuning of the top 54 backbone layers at a 100x lower learning rate
+  - Adam
+  - data augmentation (flip, rotation, zoom, contrast)
+  - dropout
+  - early stopping
+  - inverse-frequency class weights
+- **Model files:** `models/bean_model.h5` and `models/bean_model.keras`.
 
-**Held-out test set (128 images):**
+Held-out test set (128 images, full-resolution evaluation in the notebook):
 
-| Accuracy | Precision (macro) | Recall (macro) | F1 (macro) | ROC-AUC (OvR macro) |
+| Accuracy | Precision (macro) | Recall (macro) | F1 (macro) | ROC-AUC |
 |---:|---:|---:|---:|---:|
 | **0.914** | 0.915 | 0.915 | 0.913 | 0.989 |
 
-| Class | Precision | Recall | F1 |
-|---|---:|---:|---:|
-| angular_leaf_spot | 0.891 | 0.953 | 0.921 |
-| bean_rust | 0.921 | 0.814 | 0.864 |
-| healthy | 0.932 | 0.976 | 0.953 |
+What the numbers mean in practice:
+- **Accuracy 0.914:** 117 of 128 field photos are diagnosed correctly.
+- **Precision 0.915:** when the app reports a disease, it is right about 92 % of the time, so farmers rarely spray a
+  healthy crop.
+- **Recall:** this matters most here, because a missed disease is the costly error. Recall is 0.98 for healthy leaves,
+  0.95 for angular leaf spot and **0.81 for bean rust**. Early rust (a few tiny pustules) is the weak spot: only 3 of the
+  86 diseased test leaves were called "healthy", all of them rust.
+- **ROC-AUC 0.989:** the probabilities rank correctly even when the top choice is wrong, so a confidence threshold can
+  route uncertain photos to a human.
 
-The weakest class is early-stage **bean rust**: a few tiny pustules on an otherwise green leaf. Most of these errors
-have low confidence. Full EDA (three feature interpretations), confusion matrices, ROC curves and an error analysis are
-in [`notebook/bean_disease.ipynb`](notebook/bean_disease.ipynb).
+The served model (below) scores **accuracy 0.930, F1 0.929, loss 0.179** on the same test set, because the
+committed 256 px copies are slightly different inputs. Full EDA, metric interpretation, confusion matrices, ROC curves
+and an error analysis are in [`notebook/bean_disease.ipynb`](notebook/bean_disease.ipynb).
 
-## Features
+### Data insights and how they shaped the pipeline
 
-* **Single-image prediction**: upload a leaf photo and get the class, confidence and per-class probabilities.
-* **Visualizations**: live class distribution, leaf colour (RGB and hue) per class, and brightness/contrast (lighting-bias
-  check), each with an interpretation.
-* **Bulk upload**: upload many labelled images at once; they are validated (type, 5 MB limit, decodable) and queued
-  in `data/uploads/<class>/`.
-* **Retraining**: a *Retrain model* button (or `POST /retrain`) fine-tunes the current model on the training set plus
-  uploads in a background thread, with live epoch progress and before/after metrics. Retraining also **triggers automatically**
-  once pending uploads reach `RETRAIN_THRESHOLD` (default 30). Only one retrain can run at a time (409 otherwise).
-  Every retrain backs up the previous model and bumps the model version.
-* **Monitoring**: uptime, model version, last training time, prediction/request counters and a health indicator.
-* **Scalable serving**: nginx round-robins prediction traffic across N API containers; retrained models are
-  hot-reloaded by every replica.
+| Feature (visualised in the notebook and the UI) | Finding | Decision |
+|---|---|---|
+| Class distribution | Balanced (max/min = 1.02) | Accuracy is meaningful, but macro precision, recall and F1 are reported too. Class weights are applied at every retrain because uploads can unbalance the data |
+| Leaf colour (mean R/G/B, hue) | Healthy leaves are greener (hue 99° vs 75–78°), but distributions overlap | Use a CNN on pixels (texture and lesions), not colour features. Fine-tune the backbone |
+| Brightness and contrast | No lighting bias (contrast p = 0.22); rust is slightly darker because of its pustules | No lighting normalisation needed. Contrast augmentation for robustness |
 
-## Architecture
+## Prediction, upload and retraining (the deployed pipeline)
 
-```mermaid
-flowchart LR
-    U[Browser] -->|:8501| UI[Streamlit UI]
-    U -->|:80| NG[nginx]
-    UI -->|API_URL=http://nginx| NG
-    NG -->|/predict /status /metrics<br/>round-robin| A1[api replica 1]
-    NG --> A2[api replica 2]
-    NG --> A3[api replica N]
-    NG -->|/upload /retrain*| T[trainer<br/>ENABLE_TRAINING=true]
-    T -->|writes bean_model.keras| MV[(models volume)]
-    T -->|reads/writes| DV[(data volume)]
-    A1 & A2 & A3 -->|reload on mtime change| MV
-    A1 & A2 & A3 --> DV
-```
+To run on a free 512 MB host, the API serves the trained model **without TensorFlow**.
+`scripts/export_serving_model.py` splits `bean_model.h5` into:
+- `models/backbone.tflite`: rescaling + fine-tuned MobileNetV2 + pooling, run with LiteRT
+- `models/head.npz`: the trained softmax layer
 
-**Retraining with several replicas.** A dedicated `trainer` service owns `/upload` and `/retrain`. The scalable `api`
-service runs with `ENABLE_TRAINING=false` and only serves predictions. A dedicated service was chosen over a
-"designated replica" because `docker compose --scale` gives every replica identical environment variables. The trainer
-writes the new model atomically to the shared `models` volume, and each API replica reloads it on its next request
-(an mtime check in `src/prediction.py`). Named volumes mean retrained models and uploaded data survive container restarts.
+Predictions match the Keras model to 5×10⁻⁶, with identical labels on all 128 test images. Each API process uses about
+70 MB of RAM.
+
+1. **Predict:** upload a leaf photo (or pick a held-out test image). The image is resized to 224×224, passed through
+   the backbone and the head, and the app returns the class, confidence and all class probabilities.
+2. **Upload training data:** upload many labelled images at once. Each file is validated (type, 5 MB limit, decodable),
+   **saved to `data/uploads/` and recorded in the SQLite database** (`data/bean.db`, table `uploads`).
+3. **Preprocessing of uploads:** each upload is converted to RGB, resized to 224×224 and turned into a feature vector by
+   the trained backbone. The vector is stored in the database, and the row's status moves `pending → preprocessed`.
+4. **Retrain:** the *Retrain model* button (or `POST /retrain`, or automatically once 30 uploads are pending) fine-tunes
+   **our trained model's classifier head, starting from its current weights**, on the original training features plus
+   all uploads:
+   - Adam (lr 3e-4), L2 regularisation and class weights
+   - early stopping on a validation split
+   - the previous version is backed up, and every replica hot-reloads the new one
+5. **Evaluate:** the **held-out test set** is scored before and after each retrain. The UI shows accuracy, precision,
+   recall, F1, ROC-AUC and loss with their change, and the run is recorded in the `retrains` table.
+
+Full end-to-end fine-tuning (backbone included) remains available offline: `python -m src.model`.
 
 ## API
 
 | Endpoint | Description |
 |---|---|
-| `GET /status` | start time, uptime, model version, trained_at, pending uploads, counters |
+| `GET /status` | start time, uptime, model version, pending uploads, request/prediction counters |
 | `POST /predict` | multipart `file` → `{label, confidence, probabilities}`; 400 for non-images |
-| `POST /upload` | multipart `files` (many) + form `label` → saved/rejected counts, pending count |
-| `POST /retrain?epochs=N` | starts a background retrain → `{job_id}`; 409 if one is running |
-| `GET /retrain/status` | `idle` / `running` (with epoch progress) / `done` / `failed`, plus metrics |
-| `GET /metrics` | latest test metrics, training class distribution, prediction counter |
+| `POST /upload` | multipart `files` (many) + form `label` → saved to DB and preprocessed; returns IDs and the pending count |
+| `GET /uploads` | database records of the uploaded images (status, checksum, size, retrain ID) |
+| `POST /retrain?epochs=N` | starts a background retrain → `{job_id}`; 409 if one is already running |
+| `GET /retrain/status` | `idle` / `running` (epoch, validation loss) / `done` / `failed`, with before/after metrics |
+| `GET /retrain/history` | all retraining runs with test metrics before and after |
+| `GET /metrics` | current test metrics (incl. loss), class distribution, prediction counter |
 
-Interactive docs: `http://localhost/docs` (Docker) or `http://localhost:8000/docs` (local).
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Browser] --> UI[Streamlit UI<br/>Render: bean-leaf-ui-pd]
+    UI -->|HTTPS| API[FastAPI<br/>Render: bean-leaf-api-pd]
+    API --> TF[backbone.tflite<br/>LiteRT]
+    API --> H[head.npz]
+    API --> DB[(SQLite<br/>uploads, retrains)]
+    API --> F[cached train/test<br/>features]
+```
+
+Self-hosted variant (`docker compose`): nginx round-robins `/predict`, `/status` and `/metrics` across N `api` replicas
+(prediction only). A single `trainer` service owns `/upload` and `/retrain`. Named volumes share the models and the
+database, and replicas reload `head.npz` when it changes.
 
 ## Setup
 
@@ -101,82 +136,86 @@ uv venv --python 3.11 .venv            # or: py -3.11 -m venv .venv
 # Windows: .venv\Scripts\activate   |   Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m src.data_acquisition         # downloads the dataset to data/train and data/test
-python -m src.model                    # optional: retrain from scratch (~10 min on CPU)
-python -m src.preprocessing            # optional: regenerate docs/eda_stats.json
+uvicorn api.main:app --port 8000       # API (uses the committed serving artifacts)
+streamlit run ui/app.py                # UI  (API_URL defaults to http://localhost:8000)
+pytest                                 # tests, including a real retrain
 
-uvicorn api.main:app --port 8000       # API
-streamlit run ui/app.py                # UI (API_URL defaults to http://localhost:8000)
-pytest                                 # API tests
+# Optional, full pipeline from scratch:
+python -m src.data_acquisition --force # full-size dataset
+python -m src.model                    # train MobileNetV2 (~10 min on CPU) -> models/bean_model.h5
+python scripts/export_serving_model.py # -> backbone.tflite, head.npz, cached features
 ```
 
-To run the notebook with the venv's kernel:
-`python -m ipykernel install --sys-prefix --name bean-ml`, then pick **Python 3.11 (bean-ml)** in Jupyter.
+For the notebook, run `python -m ipykernel install --sys-prefix --name bean-ml` and choose the
+**Python 3.11 (bean-ml)** kernel.
 
 ### Docker
 
 ```bash
 docker compose up -d --build --scale api=2
-# UI:  http://localhost:8501     API (via nginx): http://localhost/docs
+# UI: http://localhost:8501     API via nginx: http://localhost/docs
 ```
 
-On first start the trainer downloads the dataset into the `data` volume. Environment knobs: `RETRAIN_THRESHOLD`,
-`RETRAIN_EPOCHS`, `API_CPUS` (CPU limit per API replica, default 1).
+### Cloud (Render, free)
 
-### Cloud (Ubuntu VM, 2 vCPU / 4 GB RAM or more)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dusengepeggy/MLOP-SUMMATIVE/main/deploy/setup_vm.sh | bash
-```
-
-The script installs Docker, adds swap, clones the repo and starts the stack with two API replicas. Open inbound TCP
-**80** and **8501** in the cloud firewall / security group. Free tiers with 512 MB RAM (for example Render) are too small
-for TensorFlow.
+`render.yaml` is a Render Blueprint: Render dashboard → **New → Blueprint** → select this repository → **Deploy**.
+It creates the API (Docker) and the UI (Python) as free web services. Then add two UptimeRobot HTTP monitors
+(every 5 min) for `https://bean-leaf-api-pd.onrender.com/status` and `https://bean-leaf-ui-pd.onrender.com` to keep
+them awake. An alternative self-hosted VM setup is in `deploy/setup_vm.sh`.
 
 ## Load testing (Locust)
 
-`locustfile.py` simulates users who call `/predict` (weight 5, real leaf images), `/status` (2) and `/metrics` (1),
-waiting 0.5–2 s between requests. The same profile (50 users, spawn rate 5/s, 2 minutes, headless) was run against
-1, 2 and 3 API containers, each limited to 1 CPU:
+Full results, per-endpoint tables and HTML reports are in [`docs/locust_results.md`](docs/locust_results.md).
 
-```bash
-bash scripts/run_load_tests.sh            # writes docs/locust_api{1,2,3}.html and CSVs
-python scripts/summarize_locust.py        # prints the table, draws docs/locust_scaling.png
-```
+**Cloud (Render free, 1 instance, 10 users, 2 min):**
 
-| API containers | Median (ms) | p95 (ms) | Requests/s | Failures % | `/predict` median (ms) |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 1800 | 6100 | 15.3 | 0.00 | 2400 |
-| 2 | 170 | 1700 | 28.5 | 0.00 | 600 |
-| 3 | 120 | 1500 | 30.9 | 0.00 | 250 |
+| Requests | Failures | Median | p95 | `/predict` median / p95 | Requests/s | Uptime during test |
+|---:|---:|---:|---:|---:|---:|---:|
+| 702 | 0 % | 350 ms | 720 ms | 360 / 700 ms | 5.9 | 100 % (no restarts) |
+
+About 260 ms of each response is the network round trip from Kigali to Frankfurt; a prediction adds about 100 ms of
+server time. A cold start after the instance sleeps takes about 18 s.
+
+**Scaling (local Docker + nginx, 50 users, 2 min, 1 CPU / 512 MB per container):**
+
+| API containers | Median (ms) | p95 (ms) | Requests/s | Failures % |
+|---:|---:|---:|---:|---:|
+| 1 | 54 | 370 | 35.6 | 0.00 |
+| 2 | 55 | 110 | 37.3 | 0.00 |
+| 3 | 51 | 94 | 36.4 | 0.00 |
 
 ![Locust scaling](docs/locust_scaling.png)
 
-A single 1-CPU container saturates at about 10 predictions/s, so requests queue. A second container nearly doubles
-throughput and cuts the median latency 10x. The third container adds only 8 % more throughput because the test's 50 users
-can generate at most about 32 req/s, so the load generator, not the servers, becomes the limit. Full details,
-per-endpoint numbers and HTML reports are in [`docs/locust_results.md`](docs/locust_results.md).
+One container already absorbs the full load; throughput is capped by what 50 users can generate (about 38 req/s).
+Extra containers cut the tail latency (p95 370 → 110 ms), and scaling stops paying off after 2 containers.
+
+```bash
+bash scripts/run_load_tests.sh            # 1/2/3 containers -> docs/locust_api{1,2,3}.html
+python scripts/summarize_locust.py        # table + docs/locust_scaling.png
+locust -f locustfile.py --host https://bean-leaf-api-pd.onrender.com --headless -u 10 -r 2 -t 2m
+```
 
 ## Repository layout
 
 ```
 ├── README.md
-├── notebook/bean_disease.ipynb     # EDA, training, evaluation, prediction demo
+├── notebook/bean_disease.ipynb     # EDA, preprocessing, training, evaluation, prediction demo
 ├── src/
-│   ├── config.py                   # paths and constants (env-overridable)
 │   ├── data_acquisition.py         # download the Beans dataset
-│   ├── preprocessing.py            # image loading, tf.data, augmentation, uploads, EDA features
-│   ├── model.py                    # build / train / evaluate / save / retrain
-│   └── prediction.py               # cached, hot-reloading inference
-├── data/{train,test,uploads}/      # populated by data_acquisition / uploads (git-ignored)
-├── models/                         # bean_model.h5, bean_model.keras, bean_model_meta.json
+│   ├── preprocessing.py            # image loading, tf.data pipelines, augmentation, uploads, EDA features
+│   ├── model.py                    # build / train / evaluate / save MobileNetV2 (TensorFlow)
+│   ├── prediction.py               # prediction with the full Keras model (notebook / offline)
+│   ├── serving.py                  # TF-free prediction: LiteRT backbone + numpy head
+│   ├── retrain_light.py            # upload -> preprocess -> retrain -> evaluate pipeline
+│   ├── db.py                       # SQLite: uploads and retraining runs
+│   ├── metrics.py, config.py
+├── data/train, data/test           # explicit splits (256 px); data/uploads for new data (git-ignored)
+├── models/                         # bean_model.h5/.keras, backbone.tflite, head.npz, cached features
 ├── api/main.py                     # FastAPI service
 ├── ui/app.py                       # Streamlit UI
 ├── tests/                          # pytest + TestClient
 ├── locustfile.py
-├── Dockerfile.api, Dockerfile.ui, docker-compose.yml, nginx.conf
-├── deploy/setup_vm.sh              # cloud VM bootstrap
-├── scripts/                        # load-test runner, results summary, submission zip
-├── docs/                           # Locust reports, scaling chart, EDA stats, sample images
-└── requirements.txt                # (requirements-api.txt: slim container deps)
+├── Dockerfile.api, Dockerfile.ui, docker-compose.yml, nginx.conf, render.yaml
+├── scripts/                        # export, dataset resize, load tests, summary, submission zip
+└── docs/                           # Locust reports and chart, EDA stats, sample images
 ```
