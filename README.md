@@ -11,7 +11,7 @@ An end-to-end machine learning pipeline that diagnoses **bean leaf diseases from
 |---|---|
 | **Live app (UI)** | https://bean-leaf-ui-pd.onrender.com |
 | **Live API (Swagger docs)** | https://bean-leaf-api-pd.onrender.com/docs |
-| **Demo video** | _YouTube link: add after recording_ |
+| **Demo video** | https://youtu.be/3_1zHjm-mMQ|
 
 > Free hosting note: Render's free instances sleep after 15 minutes without traffic. The first request after that
 > takes about 20 s (cold start), and a restart resets uploads and retrained models to the deployed baseline. The
